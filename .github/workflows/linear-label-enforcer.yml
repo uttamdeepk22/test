@@ -1,0 +1,56 @@
+name: Enforce Linear Label
+
+on:
+  issues:
+    types: [opened, edited, labeled, unlabeled]
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check labels and close Linear issue if needed
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_LABELS: ${{ toJson(github.event.issue.labels) }}
+        run: |
+          set -e
+
+          echo "Checking GitHub labels..."
+          echo "$ISSUE_LABELS"
+
+          if echo "$ISSUE_LABELS" | grep -q '"linear"'; then
+            echo "linear label present — nothing to do"
+            exit 0
+          fi
+
+          echo "linear label missing — finding linked Linear issue"
+
+          RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -d '{
+              "query": "query IssueByGitHubUrl($url: String!) { issues(filter: { attachments: { url: { eq: $url } } }) { nodes { id state { id name type } } } }",
+              "variables": { "url": "'"$ISSUE_URL"'" }
+            }')
+
+          echo "$RESPONSE"
+
+          ISSUE_ID=$(echo "$RESPONSE" | jq -r '.data.issues.nodes[0].id')
+
+          if [ "$ISSUE_ID" = "null" ] || [ -z "$ISSUE_ID" ]; then
+            echo "No linked Linear issue found — exiting"
+            exit 0
+          fi
+
+          echo "Found Linear issue: $ISSUE_ID"
+
+          curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -d '{
+              "query": "mutation CloseIssue($id: String!) { issueUpdate(input: { id: $id, state: \"canceled\" }) { success } }",
+              "variables": { "id": "'"$ISSUE_ID"'" }
+            }'
+
+          echo "Linear issue closed"
